@@ -1,0 +1,374 @@
+"""
+Pre-training script — executed once during Docker image build.
+Trains 4 supervised ML models with 5-fold cross-validation on the IBM Telco
+Customer Churn dataset, then serializes all artifacts to models/artifacts.pkl.
+
+The Streamlit app loads from that pkl at startup (instant, no re-training).
+"""
+
+import os
+import warnings
+import joblib
+
+import numpy as np
+import pandas as pd
+import shap
+from sklearn.datasets import fetch_openml
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import GradientBoostingClassifier, HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+
+try:
+    from xgboost import XGBClassifier
+    XGB_AVAILABLE = True
+except Exception:
+    XGB_AVAILABLE = False
+
+warnings.filterwarnings("ignore")
+
+def load_telco_data() -> tuple[pd.DataFrame, dict]:
+    df = pd.read_csv("data/Telco-Customer-Churn.csv")
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
+    median_tc = df["TotalCharges"].median()
+    df["TotalCharges"] = df["TotalCharges"].fillna(median_tc)
+    df = df.drop(columns=["customerID"])
+    df["Churn"] = (df["Churn"] == "Yes").astype(int)
+    numeric_cols = ["tenure", "MonthlyCharges", "TotalCharges", "SeniorCitizen"]
+    binary_cols = ["gender", "Partner", "Dependents", "PhoneService", "PaperlessBilling"]
+    multi_cols = [
+        "MultipleLines", "InternetService", "OnlineSecurity", "OnlineBackup",
+        "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies",
+        "Contract", "PaymentMethod",
+    ]
+    meta = {
+        "dataset_key": "telco_ibm",
+        "dataset_name": "IBM Telco Customer Churn",
+        "dataset_description": "7,043 telecom subscribers, 20 features.",
+        "numeric_cols": numeric_cols,
+        "binary_cols": binary_cols,
+        "multi_cols": multi_cols,
+        "categorical_cols": binary_cols + multi_cols,
+        "prediction_mode": "form",
+        "cv_folds": 5,
+    }
+    return df, meta
+
+
+def load_kdd_data() -> tuple[pd.DataFrame, dict]:
+    ds = fetch_openml(data_id=1112, as_frame=True)
+    X = ds.data.copy()
+    y = ds.target.astype(str).str.strip().replace({"1": 1, "-1": 0}).astype(int)
+    df = X.copy()
+    df["Churn"] = y
+
+    numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+    categorical_cols = [c for c in X.columns if c not in numeric_cols]
+    meta = {
+        "dataset_key": "kddcup09",
+        "dataset_name": "KDDCup09 Churn (OpenML)",
+        "dataset_description": "50,000 rows and 230 predictor columns.",
+        "numeric_cols": numeric_cols,
+        "binary_cols": [],
+        "multi_cols": categorical_cols,
+        "categorical_cols": categorical_cols,
+        "prediction_mode": "sample_row",
+        "cv_folds": 3,
+    }
+    return df, meta
+
+
+def load_bank_marketing_data() -> tuple[pd.DataFrame, dict]:
+    """
+    UCI Bank Marketing via OpenML (data_id=1461).
+    45,211 rows, 16 business-readable predictors.
+    """
+    ds = fetch_openml(data_id=1461, as_frame=True)
+    df = ds.data.copy()
+
+    # OpenML exposes the target separately (Class: yes/no).
+    y = ds.target.astype(str).str.strip().str.lower()
+    # OpenML encodes this dataset as 1/2, where 2 is the positive campaign response.
+    df["Churn"] = y.map({"yes": 1, "2": 1, "true": 1}).fillna(0).astype(int)
+
+    # Decode anonymized V1..V16 headers into business-readable labels.
+    rename_map = {
+        "V1": "age",
+        "V2": "job",
+        "V3": "marital",
+        "V4": "education",
+        "V5": "credit_default",
+        "V6": "balance",
+        "V7": "housing_loan",
+        "V8": "personal_loan",
+        "V9": "contact_channel",
+        "V10": "last_contact_day",
+        "V11": "last_contact_month",
+        "V12": "last_contact_duration_sec",
+        "V13": "campaign_contacts",
+        "V14": "days_since_prior_contact",
+        "V15": "prior_contacts",
+        "V16": "prior_campaign_outcome",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    df.columns = [str(c).strip().replace("-", "_") for c in df.columns]
+
+    for col in df.columns:
+        if col == "Churn":
+            continue
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().sum() == 0 and df[col].notna().sum() > 0:
+            continue
+        df[col] = converted
+
+    numeric_cols = [
+        c for c in df.columns
+        if c != "Churn" and pd.api.types.is_numeric_dtype(df[c])
+    ]
+    categorical_cols = [
+        c for c in df.columns
+        if c not in numeric_cols + ["Churn"]
+    ]
+
+    meta = {
+        "dataset_key": "bank_marketing",
+        "dataset_name": "UCI Bank Marketing (OpenML)",
+        "dataset_description": (
+            "45,211 bank campaign contacts with 16 interpretable features. "
+            "Cleaned: decoded V1-V16 columns to business-readable names and encoded campaign response target to binary churn risk."
+        ),
+        "numeric_cols": numeric_cols,
+        "binary_cols": [],
+        "multi_cols": categorical_cols,
+        "categorical_cols": categorical_cols,
+        "prediction_mode": "sample_row",
+        "cv_folds": 5,
+        "cleaning_steps": [
+            "Mapped OpenML target (`Class`) to binary `Churn` (yes=1, no=0).",
+            "Decoded anonymized `V1-V16` headers into readable business fields (age, job, marital, contact history, etc.).",
+            "Standardized column naming (`-` replaced with `_`) for consistent preprocessing and app display.",
+            "Applied numeric coercion where possible while preserving true categorical fields.",
+        ],
+    }
+    return df, meta
+
+
+def load_kkbox_data() -> tuple[pd.DataFrame, dict]:
+    # KKBox challenge data requires Kaggle access. This loader expects a pre-joined
+    # local file produced from the challenge tables.
+    path = os.getenv("KKBOX_FEATURES_PATH", "data/kkbox_churn_features.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"KKBox feature file not found at {path}. Provide a pre-joined feature table "
+            "with a binary 'is_churn' or 'Churn' column."
+        )
+
+    df = pd.read_csv(path)
+    target_col = "is_churn" if "is_churn" in df.columns else "Churn"
+    if target_col not in df.columns:
+        raise ValueError("KKBox feature file must contain 'is_churn' or 'Churn' target column")
+
+    df["Churn"] = pd.to_numeric(df[target_col], errors="coerce").fillna(0).astype(int)
+    if target_col != "Churn":
+        df = df.drop(columns=[target_col])
+
+    # Remove obvious IDs if present to reduce leakage risk.
+    leak_cols = [c for c in ["msno", "transaction_date", "membership_expire_date"] if c in df.columns]
+    if leak_cols:
+        df = df.drop(columns=leak_cols)
+
+    numeric_cols = [c for c in df.columns if c != "Churn" and pd.api.types.is_numeric_dtype(df[c])]
+    categorical_cols = [c for c in df.columns if c not in numeric_cols + ["Churn"]]
+    meta = {
+        "dataset_key": "kkbox",
+        "dataset_name": "KKBox Churn Challenge (pre-joined features)",
+        "dataset_description": "Subscription churn dataset with high-cardinality and temporal behavior signals.",
+        "numeric_cols": numeric_cols,
+        "binary_cols": [],
+        "multi_cols": categorical_cols,
+        "categorical_cols": categorical_cols,
+        "prediction_mode": "sample_row",
+        "cv_folds": 3,
+    }
+    return df, meta
+
+
+def load_data() -> tuple[pd.DataFrame, dict]:
+    dataset_key = os.getenv("CHURN_DATASET", "bank_marketing").strip().lower()
+    if dataset_key in {"telco", "telco_ibm", "ibm"}:
+        return load_telco_data()
+    if dataset_key in {"bank_marketing", "bank", "bankmarketing", "uci_bank"}:
+        return load_bank_marketing_data()
+    if dataset_key in {"kkbox", "kkbox_challenge"}:
+        try:
+            return load_kkbox_data()
+        except Exception as exc:
+            print(f"   KKBox dataset unavailable ({exc}); falling back to Bank Marketing.")
+            return load_bank_marketing_data()
+    if dataset_key in {"kdd", "kddcup09", "openml_kdd"}:
+        return load_kdd_data()
+    raise ValueError(
+        "Unsupported CHURN_DATASET value. Use one of: bank_marketing, telco_ibm, kddcup09, kkbox"
+    )
+
+
+def build_preprocessor(
+    numeric_cols: list[str],
+    categorical_cols: list[str],
+    dataset_key: str,
+) -> ColumnTransformer:
+    numeric_tf = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler",  StandardScaler()),
+    ])
+    if dataset_key == "kddcup09":
+        # KDD has many high-cardinality categoricals; ordinal encoding keeps feature space bounded.
+        cat_tf = Pipeline([
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("ordinal", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+        ])
+    else:
+        cat_tf = Pipeline([
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("ohe",     OneHotEncoder(
+                drop="if_binary", sparse_output=False, handle_unknown="ignore"
+            )),
+        ])
+    transformers = []
+    if numeric_cols:
+        transformers.append(("num", numeric_tf, numeric_cols))
+    if categorical_cols:
+        transformers.append(("cat", cat_tf, categorical_cols))
+    return ColumnTransformer(transformers)
+
+
+def clean_feature_names(names) -> list[str]:
+    return [n.split("__", 1)[1] if "__" in n else n for n in names]
+
+
+def main() -> None:
+    print("── Loading data ──────────────────────────────────────")
+    df, dataset_meta = load_data()
+    X  = df.drop(columns=["Churn"])
+    y  = df["Churn"]
+    print(f"   Dataset: {dataset_meta['dataset_name']}")
+    print(f"   Shape: {df.shape}  |  Churn rate: {y.mean()*100:.1f}%")
+
+    preprocessor = build_preprocessor(
+        dataset_meta["numeric_cols"],
+        dataset_meta["categorical_cols"],
+        dataset_meta["dataset_key"],
+    )
+
+    pos_weight = float((y == 0).sum()) / float((y == 1).sum())
+
+    if dataset_meta["dataset_key"] == "kddcup09":
+        MODELS = {
+            "Logistic Regression": LogisticRegression(
+                max_iter=1000, class_weight="balanced", random_state=42,
+            ),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=200, class_weight="balanced_subsample",
+                random_state=42, n_jobs=-1,
+            ),
+            "Hist Gradient Boosting": HistGradientBoostingClassifier(
+                max_iter=200, learning_rate=0.05, random_state=42,
+            ),
+        }
+    else:
+        MODELS = {
+            "Logistic Regression": LogisticRegression(
+                max_iter=1000, class_weight="balanced", random_state=42,
+            ),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=100, class_weight="balanced",
+                random_state=42, n_jobs=-1,
+            ),
+            "Gradient Boosting": GradientBoostingClassifier(
+                n_estimators=100, random_state=42,
+            ),
+        }
+    if XGB_AVAILABLE:
+        MODELS["XGBoost"] = XGBClassifier(
+            n_estimators=100, random_state=42, eval_metric="logloss",
+            scale_pos_weight=pos_weight, n_jobs=-1,
+        )
+    else:
+        print("   XGBoost unavailable in this environment; continuing without it.")
+
+    cv_folds = int(dataset_meta.get("cv_folds", 5))
+    cv      = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+    SCORING = ["accuracy", "f1_weighted", "roc_auc"]
+
+    cv_results   = {}
+    final_models = {}
+
+    print(f"\n── Cross-validation ({cv_folds}-fold stratified) ─────────────")
+    for name, clf in MODELS.items():
+        pipe   = Pipeline([("prep", preprocessor), ("clf", clf)])
+        scores = cross_validate(pipe, X, y, cv=cv, scoring=SCORING)
+        cv_results[name] = {
+            "Accuracy":      round(float(scores["test_accuracy"].mean()),      4),
+            "F1 (Weighted)": round(float(scores["test_f1_weighted"].mean()),   4),
+            "ROC-AUC":       round(float(scores["test_roc_auc"].mean()),       4),
+        }
+        print(f"   {name:<22}  AUC={cv_results[name]['ROC-AUC']:.4f}  "
+              f"Acc={cv_results[name]['Accuracy']:.4f}  "
+              f"F1={cv_results[name]['F1 (Weighted)']:.4f}")
+        # Fit final model on full dataset
+        pipe.fit(X, y)
+        final_models[name] = pipe
+
+    # Train/test split for evaluation plots
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42
+    )
+    eval_models = {}
+    print("\n── Training eval models (80/20 split) ───────────────")
+    for name, clf in MODELS.items():
+        pipe = Pipeline([("prep", preprocessor), ("clf", clf)])
+        pipe.fit(X_tr, y_tr)
+        eval_models[name] = pipe
+        print(f"   {name} ✓")
+
+    # SHAP values — use XGBoost when available, otherwise Random Forest
+    shap_model_name = "XGBoost" if "XGBoost" in final_models else "Random Forest"
+    print(f"\n── Computing SHAP values ({shap_model_name}, 500 samples) ────")
+    shap_pipe  = final_models[shap_model_name]
+    prep_fit   = shap_pipe.named_steps["prep"]
+    X_sample   = X.sample(500, random_state=42)
+    X_trans    = prep_fit.transform(X_sample)
+    feat_names = clean_feature_names(list(prep_fit.get_feature_names_out()))
+    explainer  = shap.TreeExplainer(shap_pipe.named_steps["clf"])
+    shap_vals  = explainer.shap_values(X_trans, check_additivity=False)
+    print(f"   SHAP values shape: {shap_vals.shape}")
+
+    # Persist everything
+    print("\n── Saving artifacts ─────────────────────────────────")
+    os.makedirs("models", exist_ok=True)
+    artifacts = {
+        "df":           df,
+        "X":            X,
+        "y":            y,
+        "X_te":         X_te,
+        "y_te":         y_te,
+        "cv_results":   cv_results,
+        "final_models": final_models,
+        "eval_models":  eval_models,
+        "shap_vals":    shap_vals,
+        "feat_names":   feat_names,
+        "X_trans":      X_trans,
+        "dataset_meta": dataset_meta,
+        "shap_model_name": shap_model_name,
+        "cv_folds": cv_folds,
+    }
+    joblib.dump(artifacts, "models/artifacts.pkl", compress=3)
+    print("   Saved → models/artifacts.pkl")
+    print("\n✓ Training complete.")
+
+
+if __name__ == "__main__":
+    main()
