@@ -1,117 +1,114 @@
-# NLP & Text Analytics
+# Supervised Machine Learning Pipeline
 
-An end-to-end Natural Language Processing project focused on **sentiment classification, topic modeling, and semantic similarity search** using movie reviews.
+An end-to-end **Supervised Machine Learning Pipeline** for preparing data, training machine learning models, evaluating their performance, and generating predictions.
 
 ## Project Overview
 
-This project analyzes **8,530 Rotten Tomatoes reviews** using various NLP and machine learning techniques. The pipeline covers text preprocessing, feature extraction, sentiment classification, topic modeling, and semantic search.
+This project demonstrates a complete machine learning workflow starting from data preprocessing and feature engineering to model training, evaluation, and prediction.
 
 ## Features
 
-* Text preprocessing and cleaning
-* TF-IDF based feature extraction
-* Sentiment classification using Logistic Regression
-* Topic modeling using NMF and LDA
-* Semantic similarity search using Sentence Transformers
-* Interactive Streamlit dashboard
-* Docker-based deployment
+* Data loading and preprocessing
+* Exploratory Data Analysis (EDA)
+* Handling missing values
+* Feature engineering
+* Feature scaling
+* Train-test data splitting
+* Supervised machine learning model training
+* Model evaluation and comparison
+* Prediction on unseen data
 
 ## Tech Stack
 
 * **Language:** Python
-* **Data Processing:** Pandas
-* **NLP:** NLTK
+* **Data Processing:** Pandas, NumPy
+* **Data Visualization:** Matplotlib, Seaborn
 * **Machine Learning:** Scikit-learn
-* **Embeddings:** Sentence Transformers
-* **Frontend/Dashboard:** Streamlit
-* **Deployment:** Docker
+* **Development:** Jupyter Notebook
+* **Version Control:** Git, GitHub
 
-## NLP Pipeline
+## Machine Learning Pipeline
 
 ```text
-Raw Reviews
+Raw Dataset
      ↓
-Text Preprocessing
+Data Cleaning
      ↓
-Feature Extraction (TF-IDF)
+Exploratory Data Analysis
      ↓
-Sentiment Classification
+Feature Engineering
      ↓
-Topic Modeling
+Feature Scaling
      ↓
-Semantic Similarity Search
+Train / Test Split
      ↓
-Streamlit Dashboard
+Model Training
+     ↓
+Model Evaluation
+     ↓
+Model Selection
+     ↓
+Prediction
 ```
 
-## Machine Learning Techniques
+## Machine Learning Workflow
 
-### Sentiment Classification
+### 1. Data Preprocessing
 
-Used **TF-IDF** for text feature extraction and **Logistic Regression** for classifying review sentiment.
+The dataset is cleaned and prepared by handling missing values, removing unnecessary data, and converting features into a suitable format for machine learning.
 
-### Topic Modeling
+### 2. Exploratory Data Analysis
 
-Applied:
+Performed EDA to understand:
 
-* **NMF (Non-negative Matrix Factorization)**
-* **LDA (Latent Dirichlet Allocation)**
+* Feature distributions
+* Relationships between variables
+* Data patterns
+* Correlations
+* Outliers
 
-to identify major topics and patterns within the reviews.
+### 3. Feature Engineering
 
-### Semantic Search
+Selected and transformed relevant features to improve model performance and prepare the dataset for training.
 
-Used **Sentence Transformers** to generate text embeddings and perform semantic similarity search across reviews.
+### 4. Model Training
 
-## Dataset
+Applied supervised machine learning algorithms using **Scikit-learn** and trained the models on the prepared dataset.
 
-The project uses **8,530 Rotten Tomatoes movie reviews** for NLP analysis and machine learning tasks.
+### 5. Model Evaluation
+
+Evaluated models using appropriate performance metrics and compared their results to identify the better-performing model.
+
+### 6. Prediction
+
+Used the trained model to generate predictions on unseen/test data.
 
 ## Installation
 
 ```bash
 git clone <your-github-repository-url>
-cd nlp-text-analytics
+cd supervised-ml-pipeline
 
 pip install -r requirements.txt
 ```
 
-## Run the Application
+## Run the Project
 
 ```bash
-streamlit run app.py
+jupyter notebook
 ```
 
-## Docker
-
-Build the Docker image:
-
-```bash
-docker build -t nlp-text-analytics .
-```
-
-Run the container:
-
-```bash
-docker run -p 8501:8501 nlp-text-analytics
-```
-
-Then open:
-
-```text
-http://localhost:8501
-```
+Open the project notebook and run the cells sequentially.
 
 ## Key Learnings
 
-* Practical implementation of NLP preprocessing techniques
-* Text feature extraction using TF-IDF
-* Supervised sentiment classification
-* Unsupervised topic modeling
-* Text embeddings and semantic search
-* Building interactive ML applications with Streamlit
-* Containerizing applications using Docker
-
-
+* End-to-end machine learning workflow
+* Data preprocessing and cleaning
+* Exploratory Data Analysis
+* Feature engineering
+* Supervised learning
+* Model evaluation and comparison
+* Python-based machine learning development
+* Using Scikit-learn for model development
 
 
